@@ -5,6 +5,10 @@ on:
     branches:
       - main
 
+permissions:
+  id-token: write
+  contents: read
+
 env:
   AWS_REGION: ap-south-1
 
@@ -19,8 +23,7 @@ jobs:
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::881490100241:role/github-ecs-role
           aws-region: ap-south-1
 
       - name: Login to ECR
@@ -28,15 +31,12 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and Push Image
-        id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: crud-app-repo
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          docker build -t $ECR_REGISTRY/crud-app-repo:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/crud-app-repo:$IMAGE_TAG
 
       - name: Download Task Definition
         run: |
@@ -45,17 +45,30 @@ jobs:
             --query taskDefinition > task-definition.json
 
       - name: Fill New Image
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition.json
-          container-name: crud-container
-          image: ${{ steps.build-image.outputs.image }}
+        run: |
+          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/crud-app-repo:${{ github.sha }}
+          jq --arg IMAGE "$IMAGE_URI" \
+          '.containerDefinitions[0].image=$IMAGE |
+           del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
+          task-definition.json > new-task-definition.json
+
+      - name: Register New Task Definition
+        run: |
+          aws ecs register-task-definition \
+            --cli-input-json file://new-task-definition.json
+
+      - name: Get Latest Revision
+        id: taskdef
+        run: |
+          REVISION=$(aws ecs describe-task-definition \
+            --task-definition crud-task \
+            --query "taskDefinition.revision" \
+            --output text)
+          echo "revision=$REVISION" >> $GITHUB_OUTPUT
 
       - name: Deploy to ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: crud-service
-          cluster: crud-cluster
-          wait-for-service-stability: true
+        run: |
+          aws ecs update-service \
+            --cluster crud-cluster \
+            --service crud-service \
+            --task-definition crud-task:${{ steps.taskdef.outputs.revision }}
