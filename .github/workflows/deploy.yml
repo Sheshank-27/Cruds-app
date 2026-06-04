@@ -24,7 +24,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::881490100241:role/github-ecs-role
-          role-session-name:GitHubActions
+          role-session-name: GitHubActions
           aws-region: ap-south-1
           audience: sts.amazonaws.com
 
